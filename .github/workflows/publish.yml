@@ -4,9 +4,12 @@ on:
   push:
     branches: ['**']
   pull_request:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: Publish the existing npm package
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -31,12 +34,6 @@ jobs:
             build-essential clang libclang-dev libdbus-1-dev libglib2.0-dev \
             libpipewire-0.3-dev libspa-0.2-dev libxkbcommon-dev pkg-config
 
-      - name: Check release tag
-        if: github.event_name == 'release'
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
-
       - name: Check Rust and guidance
         run: |
           cargo fmt --all -- --check
@@ -55,14 +52,19 @@ jobs:
           python3 -B -m unittest discover -s scripts -p 'test_model_smoke.py'
           ldd target/npm-package-test/package/vendor/bin/computer-use-mcp
 
+      - name: Checksum release package
+        run: sha256sum mirsella-opencode-computer-use-mcp-*.tgz > SHA256SUMS
+
       - uses: actions/upload-artifact@v7
         with:
           name: npm-package
-          path: mirsella-opencode-computer-use-mcp-*.tgz
+          path: |
+            mirsella-opencode-computer-use-mcp-*.tgz
+            SHA256SUMS
           if-no-files-found: error
 
   publish:
-    if: github.event_name == 'release'
+    if: inputs.publish_npm
     needs: test
     runs-on: ubuntu-24.04
     permissions:
@@ -79,5 +81,5 @@ jobs:
           name: npm-package
       - name: Publish with npm trusted publishing
         env:
-          NPM_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
+          NPM_TAG: latest
         run: npm publish ./mirsella-opencode-computer-use-mcp-*.tgz --access public --tag "$NPM_TAG"

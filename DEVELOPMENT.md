@@ -219,7 +219,7 @@ Linux/KDE environment, not a claim of support for every platform.
 ### npm packaging and releases
 
 `@mirsella/opencode-computer-use-mcp` ships the Linux x64 GNU executable, an
-OpenCode plugin, and a copy of the canonical skill. `npm pack` uses
+OpenCode adapter, Codex plugin, and a copy of the canonical skill. `npm pack` uses
 `cargo install` to build the release executable into `vendor/bin` and copies
 the canonical skill. Cargo and npm versions must match.
 The package has no JavaScript dependencies or install-time scripts.
@@ -229,20 +229,19 @@ npm pack
 npm test
 ```
 
-The single CI/publish workflow runs formatting, Clippy, and Rust tests on
-Ubuntu 24.04, then tests the extracted tarball's
-plugin permission selection, direct/compact MCP discovery, and dispatch
-validation without a desktop, and uploads the tarball as the
-`npm-package` artifact. Branch pushes, pull requests, and manual workflow runs
-build and test only. Publishing a GitHub release with a matching `v<version>` tag
-publishes that tested artifact to npm. Prereleases use the `next` dist-tag;
-stable releases use `latest`.
+CI runs formatting, Clippy, and Rust tests on Ubuntu 24.04, then tests the
+extracted package's OpenCode permissions, Codex registration, direct/compact
+MCP discovery, and dispatch validation without a desktop. It uploads the
+tested tarball and `SHA256SUMS` as the `npm-package` artifact.
 
-npm trusted publishing authorizes GitHub repository
-`mirsella/computer-use-mcp`, workflow `publish.yml`, with direct publishing
-allowed and no environment name. The publishing job uses `id-token: write`;
-it needs no npm token secret. The initial package is bootstrapped with a
-manually authenticated prerelease before registering the trusted publisher.
+Push the release commit to main and wait for CI. Dispatch `release.yml` with
+that full `commit` SHA to publish the tested artifact to GitHub Releases.
+The workflow verifies that the pinned commit is still main.
+
+The npm name remains unchanged. npm publishing requires an explicit
+`publish.yml` dispatch with `publish_npm=true`. Its trusted publisher is
+`mirsella/computer-use-mcp`, workflow `publish.yml`, without an environment.
+The job uses OIDC and needs no npm token.
 
 ### Native CLI
 

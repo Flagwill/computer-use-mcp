@@ -1,0 +1,45 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Tested main commit to release
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Release the tested package from pinned main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          test "$RELEASE_COMMIT" = "$commit"
+          test "$(git rev-parse origin/main)" = "$commit"
+          version="$(node -p 'require("./package.json").version')"
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1 || git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            echo "::error::Release or tag $tag already exists"
+            exit 1
+          fi
+          run_id="$(gh run list --commit "$commit" --workflow publish.yml --event push --status success --json databaseId --jq '.[0].databaseId')"
+          test -n "$run_id"
+          gh run download "$run_id" --name npm-package --dir release-artifacts
+          cd release-artifacts
+          sha256sum --check SHA256SUMS
+          gh release create "$tag" ./*.tgz SHA256SUMS --target "$commit" --title "$tag" --generate-notes

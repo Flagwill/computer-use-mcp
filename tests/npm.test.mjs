@@ -16,6 +16,23 @@ const manifest = JSON.parse(await readFile(new URL("package.json", root), "utf8"
 const plugin = (await import(new URL(manifest.exports["./server"], root))).default;
 const binary = fileURLToPath(new URL(manifest.bin["computer-use-mcp"], root));
 
+test("Codex packages the same standalone server and canonical skill", async () => {
+  const load = async (path) => JSON.parse(await readFile(new URL(path, root), "utf8"));
+  const codex = await load(".codex-plugin/plugin.json");
+  const marketplace = await load(".agents/plugins/marketplace.json");
+  const { mcpServers: { computer_use: server } } = await load(".mcp.json");
+  assert.equal(codex.name, "computer-use");
+  assert.equal(codex.version, manifest.version);
+  assert.equal(codex.skills, "./skills/");
+  assert.equal(marketplace.name, "computer-use-mcp");
+  assert.equal(marketplace.plugins[0].name, codex.name);
+  assert.equal(fileURLToPath(new URL(server.command, root)), binary);
+  assert.deepEqual(server.args, ["mcp", "--compact-tools"]);
+  assert.equal(server.tool_timeout_sec, 150);
+  for (const file of [".codex-plugin/plugin.json", ".agents/plugins/marketplace.json", ".mcp.json"])
+    assert.ok(manifest.files.includes(file), `${file} must ship in the tarball`);
+});
+
 test("plugin registers the bundled server and synchronized skill idempotently", async () => {
   const hooks = await plugin.server(undefined, { enabled: true });
   const config = { skills: { paths: ["/existing/skills"] } };

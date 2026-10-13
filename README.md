@@ -1,4 +1,4 @@
-# Computer Use MCP for Linux Wayland
+# Computer Use MCP
 
 [![CI](https://github.com/mirsella/computer-use-mcp/actions/workflows/publish.yml/badge.svg)](https://github.com/mirsella/computer-use-mcp/actions/workflows/publish.yml)
 
@@ -56,6 +56,40 @@ Or build and install the binary from the repository:
 cargo install --locked --git https://github.com/mirsella/computer-use-mcp computer-use-mcp
 computer-use-mcp version
 ```
+
+## Codex and other MCP hosts
+
+The server runs independently of OpenCode. Any stdio MCP host can launch
+`computer-use-mcp mcp --compact-tools` for help/dispatch, or omit
+`--compact-tools` for the six direct tools. No host-specific hooks or session
+fields are needed.
+
+The [GitHub release](https://github.com/mirsella/computer-use-mcp/releases)
+tarball contains the executable, both integrations, and the skill. Extract it
+to a permanent directory and register the packaged Codex plugin:
+
+```sh
+codex plugin marketplace add /path/to/computer-use-mcp
+codex plugin add computer-use@computer-use-mcp
+```
+
+Codex enables installed plugins. To keep Computer Use disabled until needed,
+set `enabled = false` in `[plugins."computer-use@computer-use-mcp"]` in
+`~/.codex/config.toml`. The OpenCode adapter is disabled by default.
+
+For direct Codex MCP registration, use the installed executable:
+
+```toml
+[mcp_servers.computer_use]
+command = "/absolute/path/to/computer-use-mcp"
+args = ["mcp", "--compact-tools"]
+enabled = false
+tool_timeout_sec = 150
+```
+
+The npm name remains `@mirsella/opencode-computer-use-mcp` until its separate
+migration. To use a GitHub release in OpenCode, set the plugin entry to
+`"file:///absolute/path/to/unpacked/computer-use-mcp"` instead of the npm name.
 
 ## OpenCode setup
 

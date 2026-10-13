@@ -1,7 +1,7 @@
 {
   "name": "@mirsella/opencode-computer-use-mcp",
-  "version": "0.7.0",
-  "description": "Computer use on KDE Plasma Wayland, with a bundled Rust MCP server and OpenCode plugin",
+  "version": "0.8.0",
+  "description": "Standalone Computer Use MCP for KDE Plasma Wayland, with OpenCode and Codex integrations",
   "type": "module",
   "exports": {
     ".": "./plugin/computer-use.mjs",
@@ -17,13 +17,23 @@
     "README.md",
     "MCP.md",
     "SECURITY.md",
-    "LICENSE"
+    "LICENSE",
+    ".codex-plugin/plugin.json",
+    ".agents/plugins/marketplace.json",
+    ".mcp.json"
   ],
   "scripts": {
     "prepack": "node scripts/package-native.mjs",
     "test": "node --test tests/npm.test.mjs"
   },
-  "keywords": ["opencode", "mcp", "computer-use", "wayland", "kde"],
+  "keywords": [
+    "opencode",
+    "mcp",
+    "computer-use",
+    "wayland",
+    "kde",
+    "codex"
+  ],
   "homepage": "https://github.com/mirsella/computer-use-mcp#readme",
   "bugs": "https://github.com/mirsella/computer-use-mcp/issues",
   "repository": {
@@ -32,9 +42,15 @@
   },
   "license": "MIT",
   "author": "mirsella",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "libc": ["glibc"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
   "engines": {
     "node": ">=22",
     "opencode": ">=1.18.0"
