@@ -26,7 +26,7 @@ function requiresDirectTools(config) {
 export default {
   id: "@mirsella/opencode-computer-use-mcp",
   server: async (_input, options) => {
-    const { enabled = false, compactTools = true } = options ?? {};
+    const { enabled = true, compactTools = true } = options ?? {};
     if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
     if (typeof compactTools !== "boolean") throw new Error("compactTools must be a boolean");
     return {

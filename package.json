@@ -1,6 +1,6 @@
 {
   "name": "@mirsella/opencode-computer-use-mcp",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Standalone Computer Use MCP for KDE Plasma Wayland, with OpenCode and Codex integrations",
   "type": "module",
   "exports": {

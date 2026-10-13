@@ -33,8 +33,8 @@ test("Codex packages the same standalone server and canonical skill", async () =
     assert.ok(manifest.files.includes(file), `${file} must ship in the tarball`);
 });
 
-test("plugin registers the bundled server and synchronized skill idempotently", async () => {
-  const hooks = await plugin.server(undefined, { enabled: true });
+test("plugin enables the bundled server and synchronized skill by default", async () => {
+  const hooks = await plugin.server();
   const config = { skills: { paths: ["/existing/skills"] } };
   await hooks.config(config);
   await hooks.config(config);
@@ -55,8 +55,8 @@ test("plugin registers the bundled server and synchronized skill idempotently", 
   );
 });
 
-test("plugin is disabled by default and skips the skill", async () => {
-  const hooks = await plugin.server();
+test("plugin allows explicit disablement and skips the skill", async () => {
+  const hooks = await plugin.server(undefined, { enabled: false });
   const config = { skills: { paths: ["/existing/skills"] } };
   await hooks.config(config);
   assert.deepEqual(config.mcp.computer_use, {

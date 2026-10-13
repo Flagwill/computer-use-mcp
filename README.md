@@ -59,6 +59,10 @@ computer-use-mcp version
 
 ## Codex and other MCP hosts
 
+OpenCode loads the JavaScript `./server` package export (also available as
+the root export). Codex reads the plugin and MCP manifests. Both integrations
+launch the same packaged Rust executable.
+
 The server runs independently of OpenCode. Any stdio MCP host can launch
 `computer-use-mcp mcp --compact-tools` for help/dispatch, or omit
 `--compact-tools` for the six direct tools. No host-specific hooks or session
@@ -73,9 +77,10 @@ codex plugin marketplace add /path/to/computer-use-mcp
 codex plugin add computer-use@computer-use-mcp
 ```
 
-Codex enables installed plugins. To keep Computer Use disabled until needed,
+Both integrations enable Computer Use by default. To disable it in Codex,
 set `enabled = false` in `[plugins."computer-use@computer-use-mcp"]` in
-`~/.codex/config.toml`. The OpenCode adapter is disabled by default.
+`~/.codex/config.toml`. In OpenCode, set the plugin option `enabled` to `false`
+or disable `mcp.computer_use`.
 
 For direct Codex MCP registration, use the installed executable:
 
@@ -83,7 +88,6 @@ For direct Codex MCP registration, use the installed executable:
 [mcp_servers.computer_use]
 command = "/absolute/path/to/computer-use-mcp"
 args = ["mcp", "--compact-tools"]
-enabled = false
 tool_timeout_sec = 150
 ```
 
@@ -98,13 +102,12 @@ Add the package to your OpenCode configuration, using OpenCode 1.18 or newer:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["@mirsella/opencode-computer-use-mcp", { "enabled": true }]]
+  "plugin": ["@mirsella/opencode-computer-use-mcp"]
 }
 ```
 
 The plugin registers `mcp.computer_use` with the bundled executable, a
-150-second timeout, and the computer-use skill. Without `enabled`, the entry
-shows up in `opencode mcp list` as disabled and the skill stays unloaded.
+150-second timeout, and the computer-use skill. It is enabled by default.
 
 When enabled, the model sees `computer_use_help` and
 `computer_use_dispatch`. Help lists operation names or returns one
@@ -113,10 +116,8 @@ and desktop broker. The skill loads on demand.
 
 Settings:
 
-- `enabled` (default `false`): start the server and load the skill. An
-  explicit `mcp.computer_use` entry takes precedence, so
-  `"mcp": { "computer_use": { "enabled": true } }` opts in without plugin
-  options.
+- `enabled` (default `true`): start the server and load the skill. Set it to
+  `false` to disable both. An explicit `mcp.computer_use` entry takes precedence.
 - `compactTools` (default `true`): keep the two compact tools instead of the
   six direct tools. The plugin switches to direct tools on its own when
   permission or tool rules, including agent-specific rules, name single
