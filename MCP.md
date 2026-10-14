@@ -271,6 +271,15 @@ exact `frame_id` required for spatial input. Accessibility elements expose
 opaque `element_id` values. Text and structured output are bounded and report
 truncation without cutting serialized JSON at an arbitrary byte.
 
+Each accessibility element line carries `states=[...]` alongside
+`capabilities=[...]`. It lists the AT-SPI states that decide whether a control
+is engaged, reachable, or visible — `checked`, `selected`, `pressed`,
+`expanded`, `collapsed`, `indeterminate`, `disabled`, `armed`, `focusable`,
+`focused`, `active`, `showing`, `visible`, `defunct`. Structural noise that
+AT-SPI reports on nearly every node is omitted. A `checked` or `selected` entry
+is proof a toggle landed, and its absence is proof the opposite holds, so radio
+buttons and check boxes are verifiable from observation text alone.
+
 Ready screenshots may include `changed_rect`, an advisory tile-hash bounding box
 against the previous committed captured frame. It is not a model observation
 delta. The first captured frame has no baseline. A new stream may still return
@@ -321,6 +330,20 @@ fresh verification succeeds.
 Action results separate dispatch, cleanup, and post-visual or
 post-accessibility evidence. They do not prove text delivery, application
 effect, seat focus, or client delivery.
+
+When the operation named an element and the post-action observation retains
+that same AT-SPI object, `effect.status` compares its selection states before
+and after, which is the one target-specific predicate observation can settle:
+
+- `observed` — a selection state moved, with `effect.evidence` naming it, for
+  example `checked=true`.
+- `not_observed` — the element is checkable but the state did not move.
+- `not_checked` — the element reports no selection state at all, so no
+  target-specific predicate applies and the result speaks only to dispatch.
+
+A `focus` action reports the same three values when the element is checkable,
+and otherwise keeps its focus and window-active observation. `unknown` means no
+replacement observation was retained at all.
 
 ### `wait_for`
 

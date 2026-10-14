@@ -70,7 +70,11 @@ fn tools_list_wire_has_exact_contract_and_stays_within_budget() {
         total_words <= 400,
         "tool descriptions use {total_words} words"
     );
-    assert!(PACKAGED_SKILL.len() <= 1_100);
+    // The skill teaches the workflow the tool descriptions deliberately leave
+    // out: how to select and verify a toggle from `states=` and
+    // `effect.status` without spending a screenshot round trip. Raising the
+    // budget is measured, not incidental — the guidance section is the reason.
+    assert!(PACKAGED_SKILL.len() <= 1_900);
 }
 
 #[test]
