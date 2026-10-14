@@ -2904,7 +2904,15 @@ impl<A: AccessibilityAdapter, S: ScreenshotProvider> SemanticRuntime<A, S> {
                     "observation metadata exceeds the retained-state byte limit; use a narrower target",
                 )
             })?;
-        let elements = self.traverse(window, view, limits, element_budget).await?;
+        let elements = self
+            .traverse(
+                window,
+                view,
+                limits,
+                element_budget,
+                element_query.as_deref(),
+            )
+            .await?;
         Ok(Snapshot {
             view,
             element_query,
@@ -2931,14 +2939,29 @@ impl<A: AccessibilityAdapter, S: ScreenshotProvider> SemanticRuntime<A, S> {
         view: AccessibilityScope,
         limits: SnapshotLimits,
         string_byte_budget: usize,
+        element_query: Option<&str>,
     ) -> Result<Traversal, RuntimeError> {
         let mut stack = vec![(window.object.clone(), 0_usize)];
+        // A query is applied at presentation time, so the node budget has to
+        // cover the whole path from the root to a match, not just the matches.
+        // Otherwise a deep node whose ancestors consume the budget is cut off
+        // and the caller sees "no results" and blames the query instead of the
+        // budget. With a query the traversal therefore keeps visiting past
+        // `limits.nodes` until the visited budget is exhausted. The retained
+        // snapshot is still the unfiltered traversal in either mode: the
+        // presentation filter is what narrows it, and element IDs must stay
+        // stable across a query so that acting on one is unambiguous.
+        let query = element_query.map(str::to_lowercase);
+        let visited_limit = limits
+            .nodes
+            .saturating_mul(if query.is_some() { 64 } else { 1 })
+            .min(crate::validation::MAX_TREE_NODES);
         let mut elements = Vec::new();
         let mut node_limit_reached = false;
         let mut depth_limit_reached = false;
         let mut string_bytes = 0_usize;
         while let Some((object, depth)) = stack.pop() {
-            if elements.len() >= limits.nodes {
+            if elements.len() >= visited_limit {
                 node_limit_reached = true;
                 break;
             }
@@ -4626,6 +4649,12 @@ fn element_text_line(
     if element.node.text_truncated == Some(true) {
         output.push_str(" text_truncated=true");
     }
+    let states = salient_states(&element.node);
+    if !states.is_empty() {
+        output.push_str(" states=[");
+        output.push_str(&states.join(", "));
+        output.push(']');
+    }
     let capabilities = text_capabilities(element);
     if !capabilities.is_empty() {
         output.push_str(" capabilities=[");
@@ -4960,6 +4989,35 @@ fn bounded_list_text(header: &str, entries: &[String], next_cursor: Option<&str>
             omitted
         );
     }
+}
+
+/// States that decide whether a control is engaged, reachable, or visible.
+/// Transient layout noise (resize/maximize states) is excluded: AT-SPI
+/// reports it on nearly every node and it carries no action meaning.
+/// Callers can verify a click or key press by re-observing this field.
+const SALIENT_STATES: [&str; 14] = [
+    "checked",
+    "selected",
+    "pressed",
+    "expanded",
+    "collapsed",
+    "indeterminate",
+    "disabled",
+    "armed",
+    "focusable",
+    "focused",
+    "active",
+    "showing",
+    "visible",
+    "defunct",
+];
+
+fn salient_states(node: &NodeInfo) -> Vec<String> {
+    SALIENT_STATES
+        .iter()
+        .filter(|state| node.states.contains(**state))
+        .map(|state| (*state).to_owned())
+        .collect()
 }
 
 fn text_capabilities(element: &ElementSnapshot) -> Vec<String> {
@@ -5532,26 +5590,30 @@ fn is_interactive(element: &ElementSnapshot) -> bool {
         })
 }
 
-fn element_matches_query(element: &ElementSnapshot, query: &str) -> bool {
+fn node_matches_query(node: &NodeInfo, query: &str) -> bool {
+    let query = query.to_lowercase();
     [
-        Some(element.node.role.as_str()),
-        Some(element.node.name.as_str()),
-        element.node.value.as_deref(),
-        element.node.text.as_deref(),
-        element.node.selected_text.as_deref(),
+        Some(node.role.as_str()),
+        Some(node.name.as_str()),
+        node.value.as_deref(),
+        node.text.as_deref(),
+        node.selected_text.as_deref(),
     ]
     .into_iter()
     .flatten()
-    .any(|value| value.to_lowercase().contains(query))
-        || element
-            .node
+    .any(|value| value.to_lowercase().contains(&query))
+        || node
             .states
             .iter()
-            .any(|state| state.to_lowercase().contains(query))
-        || element.node.capabilities.actions().iter().any(|action| {
-            action.name.to_lowercase().contains(query)
-                || action.description.to_lowercase().contains(query)
+            .any(|state| state.to_lowercase().contains(&query))
+        || node.capabilities.actions().iter().any(|action| {
+            action.name.to_lowercase().contains(&query)
+                || action.description.to_lowercase().contains(&query)
         })
+}
+
+fn element_matches_query(element: &ElementSnapshot, query: &str) -> bool {
+    node_matches_query(&element.node, query)
 }
 
 fn escape(value: &str) -> String {
@@ -5739,6 +5801,33 @@ fn annotate_action_output_with_progress(
         _ => None,
     };
     let replacement_element_id = replacement_element.as_ref().map(|(_, id)| id.as_str());
+    // Every operation that names an element (a semantic action, or keyboard
+    // input focused on one) can be verified against the selection state of
+    // that exact element. Radio buttons and check boxes only advertise
+    // `checked`, so this is what lets a form-filling agent confirm a choice
+    // without reading pixels. It is computed once and consulted by each
+    // effect arm below.
+    let selection_transition = {
+        let element_id = match operation {
+            ActOperation::Semantic { element_id, .. }
+            | ActOperation::Keyboard {
+                focus: KeyboardFocus::Semantic { element_id },
+                ..
+            }
+            | ActOperation::Paste {
+                focus: KeyboardFocus::Semantic { element_id },
+                ..
+            } => Some(element_id.as_str()),
+            _ => None,
+        };
+        element_id
+            .and_then(|element_id| cached_element(source_snapshot, element_id).ok())
+            .and_then(|source_element| {
+                replacement_element
+                    .as_ref()
+                    .and_then(|(replacement, _)| selection_transition(source_element, replacement))
+            })
+    };
     let (effect_status, effect_evidence, observed_change) = match (operation, replacement_snapshot) {
         (
             ActOperation::Semantic {
@@ -5756,30 +5845,94 @@ fn annotate_action_output_with_progress(
             } else {
                 "not_observed"
             };
-            (
-                status,
-                format!(
-                    "replacement observation focus state: element_focused={focused:?}, replacement_element_id={:?}, window_active={active:?}",
-                    replacement_element_id
+            // A focus request on a checkable control is how radio buttons and
+            // check boxes get selected, so the selection transition is the
+            // stronger predicate and takes precedence over focus tracking.
+            match selection_transition {
+                Some(Some(state)) => (
+                    "observed",
+                    format!(
+                        "replacement observation shows the focused element changed selection state: {state}; replacement_element_id={:?}",
+                        replacement_element_id
+                    ),
+                    Some(!same_snapshot_content(source_snapshot, current)),
                 ),
-                Some(!same_snapshot_content(source_snapshot, current)),
-            )
+                Some(None) => (
+                    "not_observed",
+                    format!(
+                        "replacement observation focus state: element_focused={focused:?}, window_active={active:?}, replacement_element_id={:?}; the element exposes a selection state but it did not change",
+                        replacement_element_id
+                    ),
+                    Some(!same_snapshot_content(source_snapshot, current)),
+                ),
+                None => (
+                    status,
+                    format!(
+                        "replacement observation focus state: element_focused={focused:?}, replacement_element_id={:?}, window_active={active:?}",
+                        replacement_element_id
+                    ),
+                    Some(!same_snapshot_content(source_snapshot, current)),
+                ),
+            }
         }
-        (ActOperation::Semantic { .. }, Some(current)) => (
-            "not_checked",
-            "replacement observation captured; any observed accessibility change is not attributed to this generic semantic action".into(),
-            Some(!same_snapshot_content(source_snapshot, current)),
-        ),
+        (ActOperation::Semantic { .. }, Some(current)) => {
+            // A semantic action is generic by construction, but the acted
+            // element itself is a real target-specific predicate whenever it
+            // exposes a selection state. Radio buttons and check boxes only
+            // advertise `checked`, so this is what makes a form-filling agent
+            // able to confirm a selection without a screenshot.
+            match selection_transition {
+                Some(Some(state)) => (
+                    "observed",
+                    format!(
+                        "replacement observation shows the acted element changed selection state: {state}; replacement_element_id={:?}",
+                        replacement_element_id
+                    ),
+                    Some(!same_snapshot_content(source_snapshot, current)),
+                ),
+                Some(None) => (
+                    "not_observed",
+                    format!(
+                        "replacement observation retained; the acted element exposes a selection state but it did not change; replacement_element_id={:?}",
+                        replacement_element_id
+                    ),
+                    Some(!same_snapshot_content(source_snapshot, current)),
+                ),
+                None => (
+                    "not_checked",
+                    "replacement observation captured; the acted element exposes no selection state, so no target-specific effect predicate applies".into(),
+                    Some(!same_snapshot_content(source_snapshot, current)),
+                ),
+            }
+        }
         (ActOperation::Semantic { .. }, None) => (
             "unknown",
             "semantic replacement observation was not retained".into(),
             None,
         ),
-        _ => (
-            "not_checked",
-            "input dispatch completed; any observed replacement change is not a target-specific effect predicate".into(),
-            replacement_snapshot.map(|current| !same_snapshot_content(source_snapshot, current)),
-        ),
+        _ => match selection_transition {
+            Some(Some(state)) => (
+                "observed",
+                format!(
+                    "input dispatch completed and the acted element changed selection state: {state}; replacement_element_id={:?}",
+                    replacement_element_id
+                ),
+                replacement_snapshot.map(|current| !same_snapshot_content(source_snapshot, current)),
+            ),
+            Some(None) => (
+                "not_observed",
+                format!(
+                    "input dispatch completed; the acted element exposes a selection state but it did not change; replacement_element_id={:?}",
+                    replacement_element_id
+                ),
+                replacement_snapshot.map(|current| !same_snapshot_content(source_snapshot, current)),
+            ),
+            None => (
+                "not_checked",
+                "input dispatch completed; any observed replacement change is not a target-specific effect predicate".into(),
+                replacement_snapshot.map(|current| !same_snapshot_content(source_snapshot, current)),
+            ),
+        },
     };
     let focus = match operation {
         ActOperation::Semantic {
@@ -6690,6 +6843,67 @@ fn replacement_element_for_source<'a>(
     Some((&replacement.elements[index], replacement_id))
 }
 
+/// States whose transition means the user-visible selection of a control
+/// changed. Radio buttons, check boxes, list items and disclosure triangles
+/// report through exactly these, so this set is what lets an agent verify a
+/// click or key press without reading pixels.
+const SELECTION_STATES: [&str; 6] = [
+    "checked",
+    "selected",
+    "pressed",
+    "expanded",
+    "collapsed",
+    "indeterminate",
+];
+
+/// AT-SPI reports `checkable` for controls that can be toggled (radio
+/// buttons, check boxes, toggle buttons) whether or not they are currently
+/// checked. It marks eligibility, not engagement, so it is read only to
+/// decide that a selection predicate applies.
+const CHECKABLE_STATE: &str = "checkable";
+
+/// Compares the acted element's selection states before and after an
+/// operation. `None` means "this element has no selection state to
+/// transition", so no effect predicate applies; `Some(None)` means the
+/// selection was unchanged, `Some(Some(state))` means it now equals `state`.
+/// Rendering boolean state as the state name keeps the call site readable.
+fn selection_transition(
+    source_element: &ElementSnapshot,
+    replacement_element: &ElementSnapshot,
+) -> Option<Option<String>> {
+    let has_selection = |element: &ElementSnapshot| {
+        SELECTION_STATES
+            .iter()
+            .any(|state| element.node.states.contains(*state))
+    };
+    let checkable = |element: &ElementSnapshot| element.node.states.contains(CHECKABLE_STATE);
+    // A checkable control that is currently unchecked reports only
+    // `checkable`, with no `checked`; it still has a selection to verify.
+    let applies = has_selection(source_element)
+        || has_selection(replacement_element)
+        || checkable(source_element)
+        || checkable(replacement_element);
+    if !applies {
+        return None;
+    }
+    let mut changed = Vec::new();
+    for state in SELECTION_STATES
+        .iter()
+        .chain(std::iter::once(&CHECKABLE_STATE))
+    {
+        let before = source_element.node.states.contains(*state);
+        let after = replacement_element.node.states.contains(*state);
+        if before != after {
+            changed.push(format!("{state}={after}"));
+        }
+    }
+    if changed.is_empty() {
+        Some(None)
+    } else {
+        Some(Some(changed.join(", ")))
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::{
@@ -7392,6 +7606,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn formatting_projects_engagement_states_so_selection_is_verifiable() {
+        // A radio button that is selected must advertise it in the text
+        // projection: callers otherwise have to fall back to screenshots to
+        // confirm a click landed.
+        let mut selected = node("r", "radio button", "Option A");
+        selected.states.insert("checked".into());
+        selected.states.insert("focusable".into());
+        selected.states.insert("visible".into());
+        selected.states.insert("enabled".into());
+        let mut unselected = node("u", "radio button", "Option B");
+        unselected.states.insert("focusable".into());
+        unselected.states.insert("visible".into());
+        unselected.states.insert("enabled".into());
+        let elements = vec![element(selected, 0, None), element(unselected, 0, None)];
+        let snapshot = Snapshot {
+            view: AccessibilityScope::Full,
+            element_query: None,
+            app: app("Editor", 1, "Main"),
+            window: window("Main", &["active"]),
+            generation: 1,
+            elements,
+            element_ids: vec!["e-0".to_owned(), "e-1".to_owned()],
+            node_limit_reached: false,
+            depth_limit_reached: false,
+            limits: SnapshotLimits {
+                text: 32,
+                nodes: 10,
+                depth: 10,
+            },
+            target_ref: None,
+            accessibility_ready: true,
+            accessibility_reason: None,
+            requires_atspi_revalidation: false,
+            screenshot_requested: false,
+            crop: ObserveCrop::Monitor,
+        };
+        let text = format_snapshot(&snapshot);
+        assert!(
+            text.contains(
+                "e-0: radio button name=\"Option A\" states=[checked, focusable, visible]"
+            ),
+            "selected option must be identifiable without a screenshot: {text}"
+        );
+        let unselected_line = text
+            .lines()
+            .find(|line| line.contains("Option B"))
+            .expect("unselected option line");
+        assert!(
+            unselected_line.contains("states=[focusable, visible]"),
+            "an unselected option must not claim a checked state: {unselected_line}"
+        );
+        assert!(
+            !unselected_line.contains("checked"),
+            "unselected option reported checked: {unselected_line}"
+        );
+    }
+
+    #[test]
     fn observation_puts_png_bounds_before_accessibility_frames() {
         let snapshot = snapshot_for_target(1, "content");
         let mapping = test_screenshot_mapping(&snapshot, "/session/bounds", None);
@@ -7916,6 +8188,74 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn query_keeps_visiting_past_the_node_budget_so_a_deep_match_survives() {
+        // The blocker this fixes: query results were truncated by non-matching
+        // ancestors consuming the node budget, so a deep radio button was
+        // silently dropped and the caller saw "no results" for a valid query.
+        // A query now raises the visited budget so the whole path is walked.
+        let mut nodes: HashMap<ObjectId, NodeInfo> = HashMap::new();
+        // 400 non-matching siblings ahead of the target, then the target
+        // nested under them.
+        let mut filler = Vec::new();
+        for index in 0..400 {
+            let path = format!("row-{index}");
+            let mut row = node(&path, "paragraph", &format!("Row {index}"));
+            row.window_frame = Some(Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            });
+            nodes.insert(id(&path), row);
+            filler.push(id(&path));
+        }
+        let mut root = node("root", "frame", "Main");
+        root.children = filler;
+        root.children.push(id("option"));
+        let mut option = node("option", "radio button", "Correct answer");
+        option.states.insert("checkable".into());
+        nodes.insert(id("root"), root);
+        nodes.insert(id("option"), option);
+        let mut app = app("Editor", 10, "Main");
+        app.windows[0].object = id("root");
+        let fake = FakeAdapter {
+            state: Arc::new(Mutex::new(FakeState {
+                app,
+                nodes,
+                actions: Vec::new(),
+                activation_calls: Vec::new(),
+                discoveries: 0,
+                discover_delay: None,
+                block_reads: false,
+                fail_actions: false,
+                semantic_focus_succeeds: true,
+                fail_discover: false,
+                replace_steps: Vec::new(),
+                replace_texts: HashMap::new(),
+                widget_fault: FakeWidgetFault::None,
+            })),
+        };
+        let runtime = fake_runtime(fake);
+
+        let snapshot =
+            requested_snapshot(&runtime, ObserveView::Accessibility, Some("radio".into())).await;
+        let matches = snapshot
+            .elements
+            .iter()
+            .filter(|element| element_matches_query(element, "radio"))
+            .count();
+        assert_eq!(matches, 1, "the deep radio button must survive the query");
+        assert!(
+            snapshot
+                .elements
+                .iter()
+                .any(|element| element.node.name == "Correct answer"),
+            "deep match was dropped: {elements:?}",
+            elements = snapshot.elements.len()
+        );
+    }
+
+    #[tokio::test]
     async fn semantic_action_rejects_element_that_left_the_filtered_view() {
         let fake = FakeAdapter::tree();
         let runtime = fake_runtime(fake.clone());
@@ -8109,6 +8449,106 @@ pub(crate) mod tests {
         assert_eq!(structured["dispatch"]["request_flushed"], false);
         assert_eq!(structured["dispatch"]["synchronized"], false);
         assert!(output.text.contains("Action: completed"));
+    }
+
+    #[test]
+    fn selection_transition_reports_observed_and_unchanged_without_pixel_evidence() {
+        // Radio buttons and check boxes only advertise AT-SPI `checked`. The
+        // effect predicate must read that transition so form-filling agents
+        // never have to fall back to a screenshot to know a click landed.
+        let target = TargetRef {
+            app_instance_id: "app-0000000000000001".into(),
+            window_instance_id: "win-0000000000000002".into(),
+        };
+        let base = snapshot_for_target(1, "radio");
+        let mut source = base.clone();
+        source.target_ref = Some(target.clone());
+        source.element_ids = vec!["e-a".into(), "e-b".into()];
+        let mut unselected = source.elements[0].clone();
+        unselected.node.role = "radio button".into();
+        unselected.node.name = "Option A".into();
+        // An unchecked radio button reports `checkable` but no `checked`;
+        // that is exactly the case that must stay verifiable.
+        unselected.node.states.insert("focusable".into());
+        unselected.node.states.insert("checkable".into());
+        let mut sibling = unselected.clone();
+        sibling.node.object = id("radio-b");
+        sibling.node.name = "Option B".into();
+        source.elements = vec![unselected, sibling];
+
+        let mut observed = source.clone();
+        observed.element_ids = vec!["e-c".into(), "e-d".into()];
+        observed.elements[0].node.states.insert("checked".into());
+        observed.elements[1].node.states.insert("checked".into());
+        let unchanged = source.clone();
+        let _ = &unchanged;
+
+        let annotate = |replacement: Option<&Snapshot>| {
+            annotate_action_output_with_progress(
+                ToolOutput::text("done"),
+                &target,
+                &ObservationRef {
+                    observation_id: "obs-0000000000000009".into(),
+                    frame_id: None,
+                },
+                &ActOperation::Semantic {
+                    element_id: "e-a".into(),
+                    action: ElementAction::Focus,
+                },
+                &source,
+                replacement,
+                None,
+                InputEvidence::default(),
+            )
+        };
+        let changed = annotate(Some(&observed)).structured_content.expect("json");
+        assert_eq!(changed["effect"]["status"], "observed");
+        assert!(
+            changed["effect"]["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("checked=true")
+        );
+        assert_eq!(changed["replacement_element_id"], "e-c");
+
+        let same = annotate(Some(&unchanged)).structured_content.expect("json");
+        assert_eq!(same["effect"]["status"], "not_observed");
+        assert!(
+            same["effect"]["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("did not change")
+        );
+
+        // A control with no selection state at all keeps the honest
+        // "not checked" spelling rather than inventing a predicate.
+        let mut plain = source.elements[0].clone();
+        plain.node.role = "section".into();
+        plain.node.states.clear();
+        let mut plain_source = source.clone();
+        plain_source.elements = vec![plain];
+        plain_source.element_ids = vec!["e-p".into()];
+        let mut plain_replacement = plain_source.clone();
+        plain_replacement.element_ids = vec!["e-q".into()];
+        let no_state = annotate_action_output_with_progress(
+            ToolOutput::text("done"),
+            &target,
+            &ObservationRef {
+                observation_id: "obs-0000000000000009".into(),
+                frame_id: None,
+            },
+            &ActOperation::Semantic {
+                element_id: "e-p".into(),
+                action: ElementAction::Invoke,
+            },
+            &plain_source,
+            Some(&plain_replacement),
+            None,
+            InputEvidence::default(),
+        )
+        .structured_content
+        .expect("json");
+        assert_eq!(no_state["effect"]["status"], "not_checked");
     }
 
     #[test]
