@@ -12,6 +12,8 @@
   },
   "files": [
     "plugin/computer-use.mjs",
+    "index.ts",
+    "plugin/opencode-v2.mjs",
     "skills/computer-use-mcp/SKILL.md",
     "vendor/bin/computer-use-mcp",
     "README.md",

@@ -2,6 +2,13 @@
 
 [![CI](https://github.com/mirsella/computer-use-mcp/actions/workflows/publish.yml/badge.svg)](https://github.com/mirsella/computer-use-mcp/actions/workflows/publish.yml)
 
+> [!NOTE]
+> This is a fork of [mirsella/computer-use-mcp](https://github.com/mirsella/computer-use-mcp).
+> It adds an observable selection state and a query-aware traversal budget to
+> the accessibility layer, and an OpenCode v2 plugin entry that re-hosts the
+> published v1 plugin onto the current registration API. See
+> [Fork changes](#fork-changes) below.
+
 A local [Model Context Protocol](https://modelcontextprotocol.io/) server for
 computer use on KDE Plasma Wayland. It is designed for a trusted local MCP
 host and user.
@@ -243,6 +250,61 @@ interface uses production validation and runtime; see
 
 KDE Plasma Wayland is the maintained target. X11, macOS, Windows, browser
 automation, and a standalone desktop UI are not supported.
+
+## Fork changes
+
+This fork is based on `mirsella/computer-use-mcp` and adds the following.
+Everything else, including the six-tool contract and the dispatch/help
+surface, is unchanged.
+
+### Observable selection state
+
+Accessibility element lines now carry `states=[...]` beside
+`capabilities=[...]`, listing the AT-SPI states that decide whether a control
+is engaged, reachable, or visible. `checked` or `selected` is proof that a
+toggle landed and its absence is proof the opposite holds, so a radio button
+or check box can be verified from observation text instead of a screenshot.
+States AT-SPI reports on nearly every node are omitted.
+
+An action that names an element also compares that element's selection states
+before and after. `effect.status` is `observed` with the transition when a
+state moved, `not_observed` when a checkable element did not move, and
+`not_checked` only when no selection state applies. A `focus` request on a
+checkable control uses this predicate, because that is how radio buttons and
+check boxes are selected.
+
+### Query-aware traversal budget
+
+An accessibility query is applied at presentation time, so its ancestor chain
+used to consume `max_nodes` and a deep match could be dropped while the caller
+saw "no results" for a valid query. The traversal now raises the visited
+budget while a query is set. The retained snapshot is still the unfiltered
+traversal, so element IDs stay stable across a query and an action on one
+remains unambiguous. Without a query the budget and its truncation report are
+unchanged.
+
+### OpenCode v2 plugin entry
+
+OpenCode v2 replaced the plugin `config` hook with `Plugin.define({ setup })`
+and changed the MCP server schema, so the published `plugin/computer-use.mjs`
+(v1 API) can no longer be the entry point. The root `index.ts` bridges it:
+it calls the v1 module for the binary path, skill directory, and
+"do not override explicit user config" rule, then re-hosts the result on the
+v2 API. Only the schema translation lives there:
+
+| v1 | v2 |
+| --- | --- |
+| `timeout: 150000` (ms, flat) | `timeout: { execution: 150 }` (seconds) |
+| `environment?: {...}` (may be absent) | omitted instead of `undefined` |
+
+Point the OpenCode plugin entry at the checkout or install directory:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["file:///absolute/path/to/computer-use-mcp"]
+}
+```
 
 ## References
 

@@ -282,3 +282,62 @@ test("public call history records compact validation and protocol errors without
   assert.throws(() => query("--since", "yesterday"));
   assert.throws(() => query("--call-id"));
 });
+
+test("OpenCode v2 bridge translates real v1 plugin output onto the v2 schema", async () => {
+  const { toV2Server, EXECUTION_TIMEOUT_SECONDS } = await import(
+    new URL("plugin/opencode-v2.mjs", root)
+  );
+  const hooks = await plugin.server(undefined, { enabled: true });
+  const scratch = { skills: { paths: [] } };
+  await hooks.config(scratch);
+  const v1 = scratch.mcp.computer_use;
+
+  const v2 = toV2Server(v1, fileURLToPath(root));
+  // The v1 value is milliseconds and flat; v2 is seconds and split by phase.
+  assert.equal(v1.timeout, 150_000);
+  assert.deepEqual(v2.timeout, { execution: EXECUTION_TIMEOUT_SECONDS });
+  assert.deepEqual(v2.command, [binary, "mcp", "--compact-tools"]);
+  assert.equal(v2.type, "local");
+  assert.equal(v2.enabled, true);
+  assert.equal(v2.cwd, fileURLToPath(root));
+  // An absent v1 `environment` must be omitted, not sent as `undefined`.
+  assert.equal("environment" in v2, false);
+  assert.equal(Object.values(v2).includes(undefined), false);
+
+  // A caller-supplied environment survives; a command string is normalized.
+  const withEnv = toV2Server(
+    { command: binary, environment: { DISPLAY: ":1" } },
+    fileURLToPath(root),
+  );
+  assert.deepEqual(withEnv.command, [binary]);
+  assert.deepEqual(withEnv.environment, { DISPLAY: ":1" });
+  // A v1 config that already carries cwd keeps it over the fallback.
+  assert.equal(
+    toV2Server({ command: [binary], cwd: "/tmp" }, fileURLToPath(root)).cwd,
+    "/tmp",
+  );
+
+  assert.throws(() => toV2Server(null, "/tmp"), /object/);
+  assert.throws(() => toV2Server({ command: [] }, "/tmp"), /command/);
+});
+
+test("OpenCode v2 entry is a plugin definition with a setup function", async () => {
+  // `index.ts` cannot be imported here: it depends on the `@opencode/plugin`
+  // runtime that only OpenCode provides. Its contract is that it is a plugin
+  // module whose default export carries an id and a setup function, so check
+  // the source the loader would read rather than executing it.
+  const source = await readFile(new URL("index.ts", root), "utf8");
+  assert.match(source, /export default Plugin\.define\(/);
+  assert.match(source, /id:\s*"@mirsella\/opencode-computer-use-mcp"/);
+  assert.match(source, /async setup\(ctx\)/);
+  assert.match(source, /ctx\.mcp\.transform/);
+  assert.match(source, /toV2Server\(server, root\)/);
+  assert.ok(
+    manifest.files.includes("index.ts"),
+    "index.ts must ship in the tarball",
+  );
+  assert.ok(
+    manifest.files.includes("plugin/opencode-v2.mjs"),
+    "plugin/opencode-v2.mjs must ship in the tarball",
+  );
+});
